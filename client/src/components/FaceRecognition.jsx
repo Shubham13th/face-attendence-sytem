@@ -1,87 +1,121 @@
-// eslint-disable-next-line no-unused-vars
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useRef, useEffect, useState } from 'react';
 import * as faceapi from 'face-api.js';
 
-const FaceDetection = () => {
-  const [modelsLoaded, setModelsLoaded] = useState(false);
-  const imageRef = useRef();
+const FaceRecognition = () => {
+  const videoRef = useRef();
   const canvasRef = useRef();
+  const [labeledFaceDescriptors, setLabeledFaceDescriptors] = useState(null);
+  const [faceMatcher, setFaceMatcher] = useState(null);
+  const [userName, setUserName] = useState('');
+  const [recognizedName, setRecognizedName] = useState('');
 
-  // Ensure the MODEL_URL points to the correct directory inside public
-  const MODEL_URL = `${window.location.origin}/models`;  // Full path to models
+  useEffect(() => {
+    const loadModels = async () => {
+      await faceapi.nets.tinyFaceDetector.loadFromUri('/models');
+      await faceapi.nets.faceLandmark68Net.loadFromUri('/models');
+      await faceapi.nets.faceRecognitionNet.loadFromUri('/models');
+      await faceapi.nets.faceExpressionNet.loadFromUri('/models');
+      startVideo();
+    };
 
-  // Load models asynchronously
-  const loadModels = async () => {
-    try {
-      // Load models from the respective directories
-      await faceapi.nets.tinyFaceDetector.loadFromUri(`${MODEL_URL}/tiny_face_detector`);
-      await faceapi.nets.faceLandmark68Net.loadFromUri(`${MODEL_URL}/face_landmark_68`);
-      await faceapi.nets.faceRecognitionNet.loadFromUri(`${MODEL_URL}/face_recognition`);
-      await faceapi.nets.faceExpressionNet.loadFromUri(`${MODEL_URL}/face_expression`);  // Loading face expression model
+    const startVideo = () => {
+      navigator.mediaDevices.getUserMedia({ video: {} }).then((stream) => {
+        videoRef.current.srcObject = stream;
+      });
+    };
 
-      setModelsLoaded(true);
-      console.log("Models loaded successfully.");
-    } catch (err) {
-      console.error("Error loading models:", err);
-    }
-  };
+    loadModels();
+  }, []);
 
-  // Handle face detection when image is loaded
-  const handleImage = async () => {
-    if (!modelsLoaded) return;
+  const handleVideoPlay = async () => {
+    const canvas = canvasRef.current;
+    const displaySize = {
+      width: videoRef.current.videoWidth,
+      height: videoRef.current.videoHeight,
+    };
+    faceapi.matchDimensions(canvas, displaySize);
 
-    const inputImage = imageRef.current;
-
-    // Log image dimensions before processing
-    console.log("Input Image Dimensions:", inputImage.width, inputImage.height);
-
-    // Perform face detection using Tiny Face Detector, Face Landmarks, and Face Recognition
-    try {
-      const detections = await faceapi.detectAllFaces(inputImage, new faceapi.TinyFaceDetectorOptions())
+    setInterval(async () => {
+      const detections = await faceapi
+        .detectAllFaces(videoRef.current, new faceapi.TinyFaceDetectorOptions())
         .withFaceLandmarks()
-        .withFaceExpressions()  // Adding face expressions detection
         .withFaceDescriptors();
 
-      if (detections.length === 0) {
-        console.log("No faces detected.");
-        return;
-      }
-
-      console.log("Detections:", detections);
-
-      // Resize the canvas to match the image dimensions
-      const displaySize = { width: inputImage.width, height: inputImage.height };
-      faceapi.matchDimensions(canvasRef.current, displaySize);
-
-      // Draw the detections
       const resizedDetections = faceapi.resizeResults(detections, displaySize);
-      faceapi.draw.drawDetections(canvasRef.current, resizedDetections);
-      faceapi.draw.drawFaceLandmarks(canvasRef.current, resizedDetections);
-      faceapi.draw.drawFaceExpressions(canvasRef.current, resizedDetections);  // Draw detected face expressions
+      canvas.getContext('2d').clearRect(0, 0, canvas.width, canvas.height);
 
-    } catch (error) {
-      console.error("Error during face detection:", error);
+      faceapi.draw.drawDetections(canvas, resizedDetections);
+      faceapi.draw.drawFaceLandmarks(canvas, resizedDetections);
+
+      if (faceMatcher) {
+        const results = resizedDetections.map((d) =>
+          faceMatcher.findBestMatch(d.descriptor)
+        );
+        results.forEach((result, i) => {
+          const box = resizedDetections[i].detection.box;
+          const drawBox = new faceapi.draw.DrawBox(box, {
+            label: result.toString(),
+          });
+          drawBox.draw(canvas);
+
+          if (result.label !== 'unknown') {
+            setRecognizedName(result.label); // Show recognized name
+          }
+        });
+      }
+    }, 100);
+  };
+
+  const handleUserRegistration = async () => {
+    const detections = await faceapi
+      .detectSingleFace(videoRef.current, new faceapi.TinyFaceDetectorOptions())
+      .withFaceLandmarks()
+      .withFaceDescriptor();
+
+    if (detections) {
+      const descriptor = detections.descriptor;
+      const newFace = new faceapi.LabeledFaceDescriptors(userName, [descriptor]);
+      setLabeledFaceDescriptors([...(labeledFaceDescriptors || []), newFace]);
+      setUserName('');
     }
   };
 
   useEffect(() => {
-    loadModels();  // Load models on component mount
-  }, []);
+    if (labeledFaceDescriptors) {
+      setFaceMatcher(new faceapi.FaceMatcher(labeledFaceDescriptors));
+    }
+  }, [labeledFaceDescriptors]);
 
   return (
-    <div className="App">
-      <h1>Face Detection</h1>
-      <div>
-        <img
-          ref={imageRef}
-          src="/images/person2.jpg"  // Image stored in public/images folder
-          alt="Face"
-          onLoad={handleImage}  // Trigger detection when the image loads
+    <div className="flex flex-col items-center">
+      <video
+        ref={videoRef}
+        autoPlay
+        muted
+        onPlay={handleVideoPlay}
+        className="rounded-md border-2 border-gray-400"
+      />
+      <canvas ref={canvasRef} className="absolute" />
+      <div className="mt-4">
+        <input
+          type="text"
+          placeholder="Enter your name"
+          value={userName}
+          onChange={(e) => setUserName(e.target.value)}
+          className="border-2 p-2"
         />
-        <canvas ref={canvasRef} />
+        <button
+          onClick={handleUserRegistration}
+          className="ml-2 bg-blue-500 text-white px-4 py-2 rounded"
+        >
+          Register Face
+        </button>
+      </div>
+      <div className="mt-4 text-xl">
+        {recognizedName && `Recognized: ${recognizedName}`}
       </div>
     </div>
   );
 };
 
-export default FaceDetection;
+export default FaceRecognition;
